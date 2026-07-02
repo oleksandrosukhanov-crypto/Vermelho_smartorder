@@ -490,8 +490,8 @@ function handleOrderResponse(data) {
 
   // Unclear items (AI couldn't disambiguate, e.g. "gin" with 4 catalog matches):
   // never stored, never confirmed — just ask the question back as a system bubble.
-  const unclearItems = items.filter(i => i.status === 'unclear');
-  const cardItems = items.filter(i => i.status !== 'unclear');
+  const unclearItems = items.filter(i => i.status === 'unclear' || i.status === 'unknown');
+  const cardItems = items.filter(i => i.status !== 'unclear' && i.status !== 'unknown');
 
   unclearItems.forEach(item => {
     appendBubble(escHtml(item.question || ('Não percebi: ' + (item.product || item.raw || ''))), 'var(--red)');
