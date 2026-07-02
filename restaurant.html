@@ -431,7 +431,7 @@ header {
 
 
 <script>
-const WEBHOOK_URL = 'https://stakanov92.app.n8n.cloud/webhook/vermelho-orders';
+const WEBHOOK_URL = 'https://n8n-stakanov.duckdns.org/webhook/vermelho-orders-v2'; // Smart Order TEST v2 — self-hosted n8n
 const DEMO_MODE   = false;
 const DEPT        = 'restaurant';
 const DEPT_LABEL  = 'Restaurant';
@@ -488,20 +488,35 @@ function handleOrderResponse(data) {
     return;
   }
 
+  // Unclear items (AI couldn't disambiguate, e.g. "gin" with 4 catalog matches):
+  // never stored, never confirmed — just ask the question back as a system bubble.
+  const unclearItems = items.filter(i => i.status === 'unclear');
+  const cardItems = items.filter(i => i.status !== 'unclear');
+
+  unclearItems.forEach(item => {
+    appendBubble(escHtml(item.question || ('Não percebi: ' + (item.product || item.raw || ''))), 'var(--red)');
+  });
+
+  if (!cardItems.length) {
+    // everything was a question — nothing left to confirm this round
+    scrollBottom();
+    return;
+  }
+
   const chat = document.getElementById('chat');
   const time = timeNow();
   const id = 'order_' + Date.now();
 
   // Store full data for later
   _pendingOrders[id] = {
-    items: items,
+    items: cardItems,
     week_id: data.week_id || '',
     department: data.department || DEPT
   };
 
   // Build item lines
   let lines = '';
-  items.forEach(item => {
+  cardItems.forEach(item => {
     const name = item.product || item.name || '';
     const qty = item.quantity || item.qty || 0;
     const unit = item.unit || '';
@@ -515,6 +530,8 @@ function handleOrderResponse(data) {
         (item.existing_quantity || 0) + ' ' + escHtml(unit) + ' · será tratado em separado</div>';
     } else if (status === 'cross') {
       badge = '<span class="flag cross">CROSS</span>';
+    } else if (status === 'review') {
+      badge = '<span class="flag warn">REVISÃO</span>';
     }
 
     lines += '<div class="order-line" style="flex-wrap:wrap;">' +
@@ -525,8 +542,8 @@ function handleOrderResponse(data) {
   });
 
   // Count new+cross vs merged
-  const newCross = items.filter(i => i.status !== 'merged');
-  const merged = items.filter(i => i.status === 'merged');
+  const newCross = cardItems.filter(i => i.status !== 'merged');
+  const merged = cardItems.filter(i => i.status === 'merged');
   let footer = newCross.length + ' novo(s)';
   if (merged.length) footer += ' · ' + merged.length + ' duplicado(s)';
 
