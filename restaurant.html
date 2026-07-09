@@ -439,6 +439,8 @@ const DEPT_LABEL  = 'Restaurant';
 /* ── STATE ── */
 const _pendingOrders = {};
 let _mergedQueue = [];
+let _suggestionQueue = [];
+let _suggestionCtx = { department: '', week_id: '' };
 
 document.addEventListener('DOMContentLoaded', () => {
   const now = new Date();
@@ -490,15 +492,26 @@ function handleOrderResponse(data) {
 
   // Unclear items (AI couldn't disambiguate, e.g. "gin" with 4 catalog matches):
   // never stored, never confirmed — just ask the question back as a system bubble.
+  const suggestionItems = items.filter(i => i.status === 'suggestion');
   const unclearItems = items.filter(i => i.status === 'unclear' || i.status === 'unknown');
-  const cardItems = items.filter(i => i.status !== 'unclear' && i.status !== 'unknown');
+  const cardItems = items.filter(i => i.status !== 'unclear' && i.status !== 'unknown' && i.status !== 'suggestion');
 
   unclearItems.forEach(item => {
     appendBubble(escHtml(item.question || ('Não percebi: ' + (item.product || item.raw || ''))), 'var(--red)');
   });
 
+  // Suggestion items (AI found exactly one close catalog candidate for a likely typo,
+  // e.g. "St German" → "Licor St Germain"): ask for explicit confirmation before inserting.
+  // Uses the 'clarify' action — the row is already fully resolved, so the AI is never called again.
+  if (suggestionItems.length) {
+    _suggestionCtx = { department: data.department || DEPT, week_id: data.week_id || '' };
+    const wasEmpty = !_suggestionQueue.length;
+    _suggestionQueue = _suggestionQueue.concat(suggestionItems);
+    if (wasEmpty) showNextSuggestion();
+  }
+
   if (!cardItems.length) {
-    // everything was a question — nothing left to confirm this round
+    // everything was a question or a suggestion — nothing left to confirm this round
     scrollBottom();
     return;
   }
@@ -710,6 +723,87 @@ async function confirmMerged(id, name, qty, unit, existing) {
 
   if (_mergedQueue.length) {
     setTimeout(showNextMerged, 400);
+  }
+}
+
+/* ── SUGGESTION QUEUE: "Talvez quisesse dizer X?" — one at a time ── */
+function showNextSuggestion() {
+  if (!_suggestionQueue.length) return;
+
+  const item = _suggestionQueue[0]; // peek, don't remove yet
+  const chat = document.getElementById('chat');
+  const time = timeNow();
+  const id = 'suggestion_' + Date.now();
+
+  const name = item.product || '';
+  const qty = item.quantity || 0;
+  const unit = item.unit || '';
+  const question = item.question || ('Talvez quisesse dizer ' + name + '?');
+
+  chat.innerHTML +=
+    '<div class="msg in" id="' + id + '">' +
+      '<div class="response-card">' +
+        '<div class="r-header" style="color:var(--red)">' + escHtml(question) + '</div>' +
+        '<div class="order-line">' +
+          '<span class="order-item">' + escHtml(name) + '<span class="flag warn">SUGESTÃO</span></span>' +
+          '<span class="order-qty">' + qty + ' ' + escHtml(unit) + '</span>' +
+        '</div>' +
+        '<div class="confirm-row">' +
+          '<button class="confirm-btn" onclick="cancelSuggestion(\'' + id + '\')">Cancelar</button>' +
+          '<button class="confirm-btn primary" onclick="confirmSuggestion(\'' + id + '\')">Confirmar</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="msg-meta">Sistema · ' + time + '</div>' +
+    '</div>';
+  scrollBottom();
+}
+
+/* ── CANCEL one suggestion, move to next — nothing sent to webhook ── */
+function cancelSuggestion(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+  _suggestionQueue.shift();
+  appendBubble('Sugestão ignorada.', 'var(--text-mute)');
+  if (_suggestionQueue.length) {
+    setTimeout(showNextSuggestion, 400);
+  }
+}
+
+/* ── CONFIRM one suggestion via 'clarify' — row already resolved, AI not called again ── */
+async function confirmSuggestion(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+  const item = _suggestionQueue.shift();
+  if (!item) return;
+
+  showTyping();
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        action: 'clarify',
+        department: _suggestionCtx.department || DEPT,
+        week_id: _suggestionCtx.week_id,
+        items: [{
+          product: item.product,
+          quantity: item.quantity,
+          unit: item.unit,
+          supplier_id: item.supplier_id,
+          status: 'pending'
+        }]
+      })
+    });
+    if (!res.ok) throw new Error('Insert failed: ' + res.status);
+    removeTyping();
+    appendBubble('✓ ' + escHtml(item.product) + ': ' + (item.quantity||0) + ' ' + escHtml(item.unit||''), 'var(--text)');
+  } catch(e) {
+    removeTyping();
+    appendError('Erro ao confirmar sugestão.');
+  }
+
+  if (_suggestionQueue.length) {
+    setTimeout(showNextSuggestion, 400);
   }
 }
 
